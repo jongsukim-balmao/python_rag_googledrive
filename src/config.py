@@ -2,7 +2,8 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+load_dotenv(PROJECT_ROOT / ".env")
 
 GOOGLE_API_KEY: str = os.environ["GOOGLE_API_KEY"]
 GOOGLE_DRIVE_FOLDER_ID: str = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
@@ -11,7 +12,6 @@ GOOGLE_CREDENTIALS_PATH: str = os.getenv(
 )
 GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
-PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 DOWNLOAD_DIR: Path = PROJECT_ROOT / "data" / "downloads"
 TOKEN_PATH: Path = PROJECT_ROOT / "credentials" / "token.json"
 

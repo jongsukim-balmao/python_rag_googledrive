@@ -13,7 +13,13 @@ build/
 
 # Project data
 data/downloads/
+data/chroma_db/
+data/sync_manifest.json
 credentials/
+
+# Local tooling
+.claude/settings.local.json
+.mcp.json
 
 # IDE
 .vscode/
