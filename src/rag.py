@@ -1,119 +1,73 @@
-"""RAG 파이프라인: Google Drive 동기화 + Gemini 파일 기반 질의응답."""
+"""RAG 파이프라인: ChromaDB 하이브리드 검색 + Gemini 생성."""
+
+from __future__ import annotations
 
 from google import genai
 
-from src.config import GEMINI_MODEL, GOOGLE_API_KEY, GOOGLE_DRIVE_FOLDER_ID
-from src.drive import download_all
-from src.gemini_files import (
-    delete_all,
-    get_file_references,
-    get_uploaded_files,
-    upload_file,
-)
+from src.config import GEMINI_MODEL, GOOGLE_API_KEY
+from src.search import build_bm25_index, hybrid_search
+from src.sync import sync
+from src.vectorstore import get_collection_stats
 
 _client = genai.Client(api_key=GOOGLE_API_KEY)
 
-SEARCH_INSTRUCTION = (
-    "You are a document search assistant. "
-    "Extract information relevant to the user's question from the provided document. "
-    "If the document contains no relevant information, respond with exactly: NO_RELEVANT_INFO. "
-    "Be concise and quote key passages. "
-    "Respond in the same language as the user's question."
-)
-
-SYNTHESIZE_INSTRUCTION = (
+SYSTEM_INSTRUCTION = (
     "You are a document assistant. "
-    "Synthesize the search results from multiple documents into a coherent answer. "
-    "Always cite which document the information comes from. "
-    "If no documents had relevant information, say so clearly. "
+    "Answer questions based ONLY on the provided document excerpts. "
+    "If the answer is not in the excerpts, say so clearly. "
+    "Always cite the source document and page number. "
     "Respond in the same language as the user's question."
 )
 
 
-def sync_files() -> list[dict]:
-    """Google Drive에서 파일을 다운로드하고 Gemini File API에 업로드.
+def sync_files() -> dict:
+    """Google Drive와 ChromaDB를 증분 동기화."""
+    return sync()
 
-    Returns:
-        업로드된 파일 정보 리스트
+
+def query(question: str, source_filter: str | None = None) -> str:
+    """하이브리드 검색 + Gemini 생성으로 질의응답.
+
+    Args:
+        question: 사용자 질문
+        source_filter: 특정 파일만 검색 (선택)
     """
-    # 기존 파일 정리
-    delete_all()
+    # BM25 인덱스가 없으면 구축 시도
+    build_bm25_index()
 
-    # Drive에서 다운로드
-    downloaded = download_all(GOOGLE_DRIVE_FOLDER_ID)
+    # 검색 필터 구성
+    where = None
+    if source_filter:
+        where = {"source_file": source_filter}
 
-    # Gemini에 업로드
-    results: list[dict] = []
-    for item in downloaded:
-        uploaded = upload_file(
-            local_path=item["local_path"],
-            display_name=item["name"],
-            drive_id=item["drive_id"],
+    # 하이브리드 검색 → parent 청크 반환
+    parents = hybrid_search(question, where=where)
+
+    if not parents:
+        return "관련 문서를 찾을 수 없습니다. sync_drive_files를 먼저 실행해주세요."
+
+    # 컨텍스트 구성
+    context_parts: list[str] = []
+    for p in parents:
+        meta = p["metadata"]
+        header = (
+            f"[{meta['source_file']} | {meta['chapter']} > {meta['section']} "
+            f"| p.{meta['page_start']}-{meta['page_end']}]"
         )
-        results.append(
-            {
-                "name": item["name"],
-                "gemini_file": uploaded.name,
-                "state": str(uploaded.state),
-            }
-        )
+        context_parts.append(f"{header}\n{p['text']}")
 
-    return results
+    context = "\n\n---\n\n".join(context_parts)
 
-
-def _search_single_file(file_ref, file_name: str, question: str) -> str | None:
-    """단일 파일에서 질문과 관련된 정보 검색."""
-    try:
-        response = _client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=[file_ref, question],
-            config={
-                "system_instruction": SEARCH_INSTRUCTION,
-                "temperature": 0.1,
-            },
-        )
-        text = response.text.strip()
-        if text == "NO_RELEVANT_INFO":
-            return None
-        return f"[{file_name}]\n{text}"
-    except Exception as e:
-        return f"[{file_name}] 검색 오류: {e}"
-
-
-def query(question: str) -> str:
-    """업로드된 문서들을 개별 검색 후 종합 응답 생성.
-
-    각 파일을 개별적으로 검색하여 관련 정보를 추출한 후,
-    결과를 종합하여 최종 답변을 생성합니다.
-    """
-    uploaded = get_uploaded_files()
-
-    if not uploaded:
-        return "동기화된 문서가 없습니다. 먼저 sync_files를 실행해주세요."
-
-    # 1단계: 각 파일에서 관련 정보 검색
-    search_results: list[str] = []
-    for drive_id, file_ref in uploaded.items():
-        result = _search_single_file(file_ref, drive_id, question)
-        if result:
-            search_results.append(result)
-
-    if not search_results:
-        return "업로드된 문서에서 관련 정보를 찾을 수 없습니다."
-
-    # 2단계: 검색 결과 종합
-    combined = "\n\n---\n\n".join(search_results)
-    synthesis_prompt = (
-        f"다음은 여러 문서에서 검색한 결과입니다:\n\n"
-        f"{combined}\n\n"
-        f"위 정보를 바탕으로 다음 질문에 답해주세요: {question}"
+    prompt = (
+        f"다음은 관련 문서 발췌입니다:\n\n{context}\n\n"
+        f"위 문서를 바탕으로 다음 질문에 답해주세요:\n{question}"
     )
 
     response = _client.models.generate_content(
         model=GEMINI_MODEL,
-        contents=[synthesis_prompt],
+        contents=[prompt],
         config={
-            "system_instruction": SYNTHESIZE_INSTRUCTION,
+            "system_instruction": SYSTEM_INSTRUCTION,
             "temperature": 0.3,
         },
     )
@@ -121,17 +75,24 @@ def query(question: str) -> str:
     return response.text
 
 
-def list_sources() -> list[dict]:
-    """현재 업로드된 문서 소스 목록 반환."""
-    uploaded = get_uploaded_files()
-    sources: list[dict] = []
-    for key, f in uploaded.items():
-        sources.append(
-            {
-                "name": key,
-                "gemini_name": f.name,
-                "size_bytes": f.size_bytes if hasattr(f, "size_bytes") else None,
-                "state": str(f.state) if f.state else "ACTIVE",
-            }
-        )
-    return sources
+def list_sources() -> dict:
+    """동기화된 문서 및 ChromaDB 통계 반환."""
+    stats = get_collection_stats()
+
+    # sync manifest에서 파일별 정보 로드
+    from src.sync import _load_manifest
+    manifest = _load_manifest()
+
+    sources = []
+    for fid, info in manifest.items():
+        sources.append({
+            "name": info["name"],
+            "drive_id": fid,
+            "chunk_count": info.get("chunk_count", 0),
+            "last_synced": info.get("last_synced", ""),
+        })
+
+    return {
+        "total_chunks": stats["total_chunks"],
+        "sources": sources,
+    }

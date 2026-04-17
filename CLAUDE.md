@@ -1,31 +1,43 @@
 # Google Drive RAG MCP Server
 
 ## Project Overview
-Google Drive 폴더의 문서를 Gemini File API에 업로드하여 검색/질의응답을 수행하고,
-이를 MCP(Model Context Protocol) 서버로 래핑하여 외부 AI 클라이언트에서 사용하는 프로젝트.
+Google Drive 폴더의 문서를 파싱 → 청킹 → 임베딩하여 ChromaDB에 저장하고,
+하이브리드 검색(벡터+BM25) + Gemini 생성으로 질의응답을 수행하는 MCP 서버.
 
 ## Tech Stack
 - **Language**: Python 3.12
-- **LLM & File Search**: Google Gemini API - File API (`google-genai`)
+- **LLM**: Google Gemini API - gemini-2.5-flash (`google-genai`)
+- **Embedding**: Gemini gemini-embedding-001 (무료)
+- **Vector Store**: ChromaDB (로컬 PersistentClient)
+- **Keyword Search**: BM25 (`rank-bm25`)
+- **PDF Parsing**: PyMuPDF (`pymupdf`)
 - **Document Source**: Google Drive API (`google-api-python-client`)
 - **MCP Server**: `mcp` Python SDK (stdio transport)
-- **Auth**: Google OAuth 2.0 (Desktop App)
 
 ## Architecture
 ```
 Google Drive Folder
         │
-        ▼  (google-api-python-client)
-   Download Files (PDF/Docs/Sheets export)
+        ▼  google-api-python-client
+   Download Files (PDF export)
         │
-        ▼  (google-genai File API)
-   Upload to Gemini File Storage
+        ▼  PyMuPDF (parser.py)
+   구조 인식 파싱 (heading/code/table/prose 감지)
         │
-        ▼  (google-genai generate_content)
-   Per-file search → Synthesize answer
+        ▼  chunker.py
+   Parent-Child 계층 청킹 (800토큰 child + 4000토큰 parent)
         │
-        ▼  (mcp SDK)
-   MCP Server (stdio) → Claude Desktop / Claude Code / etc.
+        ▼  Gemini embedding API (embeddings.py)
+   임베딩 생성 → ChromaDB 저장 (vectorstore.py)
+        │
+        ▼  search.py
+   하이브리드 검색 (벡터 + BM25 + RRF 병합)
+        │
+        ▼  Gemini generate_content (rag.py)
+   Parent 청크 컨텍스트로 답변 생성
+        │
+        ▼  mcp_server.py
+   MCP Server (stdio) → Claude Desktop / Claude Code
 ```
 
 ## Project Structure
@@ -38,14 +50,22 @@ Python_rag/
 ├── .gitignore
 ├── src/
 │   ├── __init__.py
-│   ├── config.py         # 환경변수 로드 및 설정
-│   ├── drive.py          # Google Drive 문서 다운로드
-│   ├── gemini_files.py   # Gemini File API 업로드/관리
-│   ├── rag.py            # RAG 파이프라인 (파일 컨텍스트 + 생성)
-│   └── mcp_server.py     # MCP 서버 엔트리포인트
+│   ├── __main__.py        # python -m src 진입점
+│   ├── config.py          # 환경변수 및 상수
+│   ├── drive.py           # Google Drive OAuth + 파일 다운로드
+│   ├── parser.py          # PyMuPDF PDF 구조 인식 파싱
+│   ├── chunker.py         # Parent-Child 계층 청킹
+│   ├── embeddings.py      # Gemini 임베딩 함수 (ChromaDB 연동)
+│   ├── vectorstore.py     # ChromaDB CRUD
+│   ├── search.py          # 하이브리드 검색 (벡터+BM25+RRF)
+│   ├── sync.py            # 증분 동기화 (매니페스트 기반)
+│   ├── rag.py             # RAG 파이프라인 (검색 + 생성)
+│   └── mcp_server.py      # MCP 서버 (tool 노출)
 ├── data/
-│   └── downloads/        # (gitignore) Drive에서 다운로드한 파일 임시 저장
-├── credentials/          # (gitignore) Google OAuth 자격증명
+│   ├── chroma_db/         # (gitignore) ChromaDB 영구 저장소
+│   ├── downloads/         # (gitignore) Drive 다운로드 임시 파일
+│   └── sync_manifest.json # (gitignore) 동기화 상태
+├── credentials/           # (gitignore) Google OAuth 자격증명
 └── tests/
     ├── __init__.py
     └── test_rag.py
@@ -53,38 +73,22 @@ Python_rag/
 
 ## Key Commands
 ```bash
-# 가상환경 활성화
 source .venv/Scripts/activate    # Windows Git Bash
-.venv\Scripts\activate           # Windows CMD
-
-# 의존성 설치
 pip install -r requirements.txt
-
-# MCP 서버 실행 (stdio)
-python -m src.mcp_server
-
-# 테스트
-pytest tests/ -v
+python -m src.mcp_server         # MCP 서버 실행
+pytest tests/ -v                 # 테스트
 ```
 
-## Environment Variables (.env)
-```
-GOOGLE_API_KEY=              # Gemini API 키 (Google AI Studio에서 발급)
-GOOGLE_DRIVE_FOLDER_ID=      # 대상 Google Drive 폴더 ID
-GOOGLE_CREDENTIALS_PATH=credentials/credentials.json
-GEMINI_MODEL=gemini-2.0-flash
-```
-
-## MCP Tools (exposed to AI clients)
-- `sync_files`: Google Drive → Gemini File API 동기화
-- `query`: 업로드된 문서 기반 질의응답
-- `list_sources`: 동기화된 문서 목록 조회
+## MCP Tools
+- `sync_drive_files`: Google Drive → ChromaDB 증분 동기화
+- `query_documents(question, source_filter?)`: 하이브리드 검색 + 답변 생성
+- `list_synced_sources`: 동기화된 문서 목록 및 통계
 
 ## Architecture Decisions
-- **Gemini File API**: 자체 임베딩/벡터DB 없이 Gemini가 파일을 직접 파싱하고 검색 (PDF, Docs, Sheets 등 네이티브 지원)
-- **파일별 개별 검색 + 종합**: Gemini 1000페이지 제한 대응. 각 파일을 개별 검색 후 결과를 종합하여 최종 답변 생성
-- **MCP stdio transport**: Claude Desktop, Claude Code 등에서 프로세스 기반으로 바로 연결
-- **Google Workspace export**: Docs→PDF, Sheets→CSV, Slides→PDF로 변환 후 Gemini에 업로드
+- **Parent-Child 청킹**: child(800토큰)으로 정밀 검색, parent(4000토큰)로 맥락 제공
+- **하이브리드 검색**: 벡터(의미) + BM25(키워드) + RRF 병합 → 코드 함수명 등 정확 매칭 보강
+- **증분 동기화**: sync_manifest.json으로 변경 파일만 재처리
+- **ChromaDB PersistentClient**: 서버 재시작 후 즉시 검색 가능, 별도 DB 서버 불필요
 
 ## Conventions
 - 모든 소스 코드는 `src/` 하위에 위치

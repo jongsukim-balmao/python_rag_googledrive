@@ -9,7 +9,7 @@ GOOGLE_DRIVE_FOLDER_ID: str = os.environ["GOOGLE_DRIVE_FOLDER_ID"]
 GOOGLE_CREDENTIALS_PATH: str = os.getenv(
     "GOOGLE_CREDENTIALS_PATH", "credentials/credentials.json"
 )
-GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 DOWNLOAD_DIR: Path = PROJECT_ROOT / "data" / "downloads"
@@ -38,3 +38,27 @@ SUPPORTED_MIME_TYPES: set[str] = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 }
+
+# ── Chunking ──
+CHUNK_SIZE_TOKENS: int = 800
+CHUNK_OVERLAP_TOKENS: int = 200
+PARENT_CHUNK_MAX_TOKENS: int = 4000
+MIN_CHUNK_SIZE_TOKENS: int = 50
+CODE_BLOCK_MAX_TOKENS: int = 1500
+CHARS_PER_TOKEN: float = 4.0  # 영어 기준 근사치
+
+# ── Embedding ──
+EMBEDDING_MODEL: str = "gemini-embedding-001"
+EMBEDDING_BATCH_SIZE: int = 100
+
+# ── ChromaDB ──
+CHROMA_DB_PATH: Path = PROJECT_ROOT / "data" / "chroma_db"
+CHROMA_COLLECTION: str = "rag_chunks"
+
+# ── Search ──
+SEARCH_TOP_K: int = 30
+RRF_K: int = 60
+FINAL_TOP_K: int = 5
+
+# ── Sync ──
+SYNC_MANIFEST_PATH: Path = PROJECT_ROOT / "data" / "sync_manifest.json"

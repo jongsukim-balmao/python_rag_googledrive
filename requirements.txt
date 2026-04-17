@@ -4,6 +4,15 @@ google-api-python-client>=2.100.0
 google-auth-httplib2>=0.2.0
 google-auth-oauthlib>=1.2.0
 
+# PDF Parsing
+PyMuPDF>=1.24.0
+
+# Vector Store & Embedding
+chromadb>=0.5.0
+
+# Keyword Search
+rank-bm25>=0.2.2
+
 # MCP Server
 mcp>=1.0.0
 
