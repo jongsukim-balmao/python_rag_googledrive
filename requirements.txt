@@ -1,0 +1,12 @@
+# Google APIs
+google-genai>=1.0.0
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# MCP Server
+mcp>=1.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+pytest>=8.0.0
